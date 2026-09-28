@@ -54,6 +54,7 @@ jobs:
           docker compose version
           test "$code" -eq 1                                          # fake credentials must not pass
           grep -q "the bot is not healthy" install.log
+          grep -q "API_ID/API_HASH are wrong" install.log              # and says why, in plain words
           if grep -q "^Installed\." install.log; then echo "reported success with fake credentials"; exit 1; fi
           # the download server itself came up inside the container
           sudo docker logs mp3-collector-bot 2>&1 | grep -q "download server listening"

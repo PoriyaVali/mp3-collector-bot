@@ -145,7 +145,11 @@ is_int()   { [[ "$1" =~ ^[0-9]+$ ]]; }
 is_hash()  { [[ "$1" =~ ^[0-9a-fA-F]{32}$ ]] || { echo "  API_HASH is 32 hex characters" >&2; return 1; }; }
 is_token() { [[ "$1" =~ ^[0-9]+:[A-Za-z0-9_-]{30,}$ ]] || { echo "  that does not look like a bot token (123456:ABC...)" >&2; return 1; }; }
 is_ids()   { [[ "$1" =~ ^[0-9]+([,\ ]+[0-9]+)*$ ]] || { echo "  numeric ids only, comma separated" >&2; return 1; }; }
-is_port()  { is_int "$1" && [ "$1" -ge 1 ] && [ "$1" -le 65535 ] || { echo "  a port is 1-65535" >&2; return 1; }; }
+is_port() {
+    if is_int "$1" && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; then return 0; fi
+    echo "  a port is 1-65535" >&2
+    return 1
+}
 is_url()   { [[ "$1" =~ ^https?://[^[:space:]]+$ ]] || { echo "  must start with http:// or https://" >&2; return 1; }; }
 
 # ask VAR "question" "default" validator  (a value already in the environment wins)

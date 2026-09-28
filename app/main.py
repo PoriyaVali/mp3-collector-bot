@@ -48,7 +48,10 @@ async def run() -> int:
         log.info("download server listening on :%s (public: %s)", cfg.listen_port, cfg.base_url)
         return await serve(cfg, db, bot, user)
     except errors.AccessTokenInvalidError:
-        log.error("BOT_TOKEN is wrong: get the token again from @BotFather and run `mp3bot config`")
+        log.error("configuration error: BOT_TOKEN is wrong; get it again from @BotFather and run `mp3bot config`")
+        return 1
+    except errors.ApiIdInvalidError:
+        log.error("configuration error: API_ID/API_HASH are wrong; copy them again from my.telegram.org and run `mp3bot config`")
         return 1
     except Exception:  # noqa: BLE001 - log it, exit non-zero, let Docker restart us
         log.exception("fatal error")
