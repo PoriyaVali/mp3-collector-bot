@@ -133,6 +133,10 @@ class Database:
         except ValueError:
             return default
 
+    async def get_str(self, key: str, default: str = "") -> str:
+        row = await self._one("SELECT value FROM settings WHERE key = ?", (key,))
+        return row["value"] if row else default
+
     async def get_bool(self, key: str, default: bool = False) -> bool:
         return bool(await self.get_int(key, int(default)))
 

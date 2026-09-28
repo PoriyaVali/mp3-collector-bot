@@ -15,6 +15,7 @@ from .collector import Collector, JoinError
 from .db import Database, now
 from .files import human_size
 from .links import ChannelRef, parse_refs
+from .updates import UpdateWatcher
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ ADD_HELP = (
     "• لینک خصوصی: <code>https://t.me/+AbCdEf...</code>\n"
     "یا یک پست از کانال عمومی را برای ربات فوروارد کنید."
 )
+
+UPDATE_REQUESTED = "⏳ تا چند دقیقه دیگر نسخه جدید بررسی و اگر آمده باشد نصب می‌شود؛ نتیجه را خبر می‌دهم."
 
 STATUS_ICON = {"active": "🟢", "paused": "⏸", "removed": "🗑"}
 
@@ -164,8 +167,10 @@ class Deliverer:
 
 class BotUI:
     def __init__(self, db: Database, bot: TelegramClient, collector: Collector, batcher: Batcher,
-                 deliverer: Deliverer, admin_ids: frozenset[int], data_dir: Path):
+                 deliverer: Deliverer, admin_ids: frozenset[int], data_dir: Path,
+                 updates: UpdateWatcher | None = None):
         self.db = db
+        self.updates = updates
         self.bot = bot
         self.collector = collector
         self.batcher = batcher
@@ -224,6 +229,9 @@ class BotUI:
                 return await event.reply(f"🔁 {n} آهنگ خطادار دوباره در صف دانلود قرار گرفت.")
             if cmd in ("/batch", "/expire", "/autoflush"):
                 return await self.set_number(event, cmd, arg)
+            if cmd == "/update" and self.updates:
+                self.updates.request_update(event.chat_id)
+                return await event.reply(UPDATE_REQUESTED)
             if cmd.startswith("/ch_") and cmd[4:].isdigit():
                 body, buttons = await self.channel_view(int(cmd[4:]))
                 return await event.reply(body, buttons=buttons)
@@ -255,7 +263,8 @@ class BotUI:
                 "/status وضعیت · /channels کانال‌ها · /settings تنظیمات\n"
                 "/batch 30 تعداد آهنگ هر zip · /expire 7 اعتبار لینک (روز)\n"
                 "/autoflush 12 ارسال بسته ناقص بعد از چند ساعت بی‌فعالیتی\n"
-                "/flush ارسال فوری بسته‌های ناقص · /retry تلاش دوباره خطاها"
+                "/flush ارسال فوری بسته‌های ناقص · /retry تلاش دوباره خطاها\n"
+                "/update نصب نسخه جدید ربات (اگر آمده باشد)"
             )
             if not self.collector.ready:
                 body += "\n\n⚠️ حساب کاربری ربات هنوز وارد نشده؛ روی سرور بزنید: <code>mp3bot login</code>"
@@ -358,6 +367,8 @@ class BotUI:
             f"🗜 فایل‌های zip: {totals['n']} ({human_size(totals['bytes'])})، روی سرور: {totals['live']}",
             f"💽 فضای آزاد دیسک: {human_size(disk.free)} از {human_size(disk.total)}",
         ]
+        if self.updates:
+            lines.append("\n" + self.updates.describe())
         failures = await self.db.recent_failures(3)
         if failures:
             lines.append("\nآخرین خطاها:")
@@ -434,6 +445,8 @@ class BotUI:
             "عدد دلخواه: <code>/batch 50</code>  <code>/expire 3</code>  <code>/autoflush 24</code>\n"
             "(۰ برای اعتبار لینک یعنی بدون انقضا، برای ارسال خودکار یعنی خاموش)"
         )
+        if self.updates:
+            body += "\n\n" + self.updates.describe()
         buttons = [
             [Button.inline(label, f"bs:{step}".encode()) for label, step in
              (("−10", -10), ("−5", -5), ("−1", -1), ("+1", 1), ("+5", 5), ("+10", 10))],
@@ -441,6 +454,12 @@ class BotUI:
             [Button.inline("📦 −6 ساعت", b"af:-6"), Button.inline("📦 +6 ساعت", b"af:6")],
             [Button.inline(f"👥 کاربران: {'آزاد ✅' if allow else 'بسته ⛔'}", b"us:t")],
         ]
+        if self.updates:
+            auto = self.updates.auto_enabled
+            buttons.append([
+                Button.inline(f"🔄 به‌روزرسانی خودکار: {'روشن ✅' if auto else 'خاموش ⛔'}", b"au:t"),
+                Button.inline("⬆️ به‌روزرسانی الان", b"au:n"),
+            ])
         return body, buttons
 
     async def set_number(self, event, cmd: str, arg: str) -> None:
@@ -478,6 +497,14 @@ class BotUI:
             return await event.answer("فقط ادمین", alert=True)
         kind, _, value = event.data.decode().partition(":")
         try:
+            if kind == "au" and self.updates:
+                if value == "n":
+                    self.updates.request_update(event.chat_id)
+                    return await event.answer(UPDATE_REQUESTED, alert=True)
+                self.updates.set_auto(not self.updates.auto_enabled)
+                body, buttons = await self.settings_view()
+                await event.edit(body, buttons=buttons)
+                return await event.answer("✅")
             if kind in ("bs", "ex", "af", "us"):
                 await self._settings_button(kind, value)
                 body, buttons = await self.settings_view()

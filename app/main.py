@@ -14,6 +14,7 @@ from .bot import BotUI, Deliverer
 from .collector import Collector
 from .config import ConfigError, load_config
 from .db import Database
+from .updates import UpdateWatcher
 from .web import start_web
 
 log = logging.getLogger("mp3bot")
@@ -85,9 +86,12 @@ async def serve(cfg, db: Database, bot: TelegramClient, user: TelegramClient) ->
         scan_interval=cfg.scan_interval_min * 60,
     )
     ui = BotUI(db, bot, collector, batcher, deliverer, cfg.admin_ids, cfg.data_dir)
+    updates = UpdateWatcher(db, cfg.data_dir, ui.notify_admins, bot.send_message)
+    ui.updates = updates
     ui.register()
     collector.alert = ui.notify_admins
     deliverer.start()
+    await updates.start()
 
     await user.connect()
     if await user.is_user_authorized():

@@ -3,12 +3,13 @@
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/PoriyaVali/mp3-collector-bot/main/install.sh)
 #
-# Installs Docker if missing, downloads the bot, asks for the settings,
-# logs the Telegram account in and starts everything. Safe to run again:
-# it updates the code and keeps your settings and data.
+# Installs Docker if missing, downloads the newest release, asks for the settings,
+# logs the Telegram account in, starts everything and turns on automatic updates.
+# Safe to run again: it moves to the newest release and keeps your settings and data.
 #
 # Non-interactive use: export API_ID, API_HASH, BOT_TOKEN, ADMIN_IDS
 # (and optionally WEB_PORT, BASE_URL) before running; SKIP_LOGIN=1 skips the login step.
+# INSTALL_REF=v1.2.3 installs that version; INSTALL_REF=keep uses the code already in INSTALL_DIR.
 set -Eeuo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/PoriyaVali/mp3-collector-bot.git}"
@@ -105,24 +106,37 @@ ok "$(docker compose version)"
 
 # --------------------------------------------------------------------------
 step "Downloading the bot to $INSTALL_DIR"
+# safe.directory: the checkout may belong to another user than root
+git_in() { git -c safe.directory="$INSTALL_DIR" -c advice.detachedHead=false -C "$INSTALL_DIR" "$@"; }
 if [ -d "$INSTALL_DIR/.git" ]; then
-    if git -C "$INSTALL_DIR" pull --ff-only -q; then
-        ok "updated to $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
-    else
-        warn "could not update the code (local changes?); keeping the current copy"
-    fi
+    git_in fetch -q --tags origin || warn "could not reach GitHub; keeping the current code"
 else
     tmp_clone="$(mktemp -d)"
-    git clone -q --depth 1 "$REPO_URL" "$tmp_clone/repo" || die "could not download $REPO_URL"
+    git clone -q "$REPO_URL" "$tmp_clone/repo" || die "could not download $REPO_URL"
     mkdir -p "$INSTALL_DIR"
     # Copy in (instead of cloning in place) so leftovers of an earlier attempt, like .env or data/, survive.
     cp -a "$tmp_clone/repo/." "$INSTALL_DIR/"
     rm -rf "$tmp_clone"
-    ok "downloaded $(git -C "$INSTALL_DIR" rev-parse --short HEAD)"
 fi
+# INSTALL_REF: "latest" (default) = the newest release tag; "keep" = the code as it is; or a tag like v1.1.0
+case "${INSTALL_REF:-latest}" in
+    keep) ;;
+    latest)
+        tags="$(git_in tag -l 'v[0-9]*' --sort=-v:refname)"
+        latest_tag=""
+        read -r latest_tag <<< "$tags" || true
+        if [ -n "$latest_tag" ]; then
+            git_in checkout -q "$latest_tag" || die "could not switch to $latest_tag (files changed by hand in $INSTALL_DIR?)"
+        else
+            warn "no releases yet; using the main branch"
+        fi
+        ;;
+    *) git_in checkout -q "$INSTALL_REF" || die "there is no version $INSTALL_REF" ;;
+esac
 chmod +x "$INSTALL_DIR/install.sh" "$INSTALL_DIR/mp3bot.sh"
 cd "$INSTALL_DIR"
 mkdir -p data
+ok "version $(awk -F'"' '/^__version__/ { print $2 }' app/__init__.py) ($(git_in rev-parse --short HEAD))"
 
 # --------------------------------------------------------------------------
 ENV_FILE="$INSTALL_DIR/.env"
@@ -255,32 +269,18 @@ fi
 step "Starting"
 compose up -d --remove-orphans
 ln -sf "$INSTALL_DIR/mp3bot.sh" /usr/local/bin/mp3bot
+if scheduler="$(bash "$INSTALL_DIR/mp3bot.sh" install-scheduler)"; then
+    ok "automatic updates on ($scheduler); turn off in the bot's settings or with: mp3bot autoupdate off"
+else
+    warn "could not set up automatic updates; run 'mp3bot update' now and then"
+fi
 
 # Success = the bot logged in to Telegram AND the download server answers AND the
 # container is not in a crash/restart loop (the web server can answer between restarts).
-online=0
-failed=0
-for _ in $(seq 1 45); do
-    started="$(docker inspect -f '{{.State.StartedAt}}' mp3-collector-bot 2>/dev/null || true)"
-    logs="$(docker logs ${started:+--since "$started"} mp3-collector-bot 2>&1 || true)"
-    case "$logs" in
-        *"fatal error"*|*"BOT_TOKEN is wrong"*|*"configuration error"*) failed=1; break ;;
-        *"is online"*) online=1; break ;;
-    esac
-    sleep 2
-done
-healthy=0
-if [ "$(curl -fsS --max-time 5 "http://127.0.0.1:${WEB_PORT}/health" 2>/dev/null || true)" = "ok" ]; then
-    healthy=1
-fi
-restarts_before="$(docker inspect -f '{{.RestartCount}}' mp3-collector-bot 2>/dev/null || echo 0)"
-sleep 5
-state="$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' mp3-collector-bot 2>/dev/null || echo "missing 0")"
-if [ "$failed" -eq 0 ] && [ "$online" -eq 1 ] && [ "$healthy" -eq 1 ] \
-    && [ "${state%% *}" = "running" ] && [ "${state##* }" = "$restarts_before" ]; then
+if bash "$INSTALL_DIR/mp3bot.sh" verify; then
     ok "the bot is online and the download server answers on port $WEB_PORT"
 else
-    warn "the bot is not healthy (online=$online, download server=$healthy, container: $state). Last log lines:"
+    warn "the bot is not healthy. Last log lines:"
     compose logs --tail 30 bot || true
     die "fix the problem above, then run: mp3bot restart"
 fi
@@ -297,5 +297,8 @@ ${C_GREEN}${C_BOLD}Installed.${C_OFF}
         then send it a channel link.
   Make sure port ${WEB_PORT}/tcp is open in your server provider's firewall.
 
-  Manage it with:  mp3bot status | logs | restart | login | config | update | uninstall
+  New versions are installed automatically (checked every few hours); if one
+  fails to start, the previous version is put back by itself.
+
+  Manage it with:  mp3bot status | logs | restart | login | config | update | autoupdate on/off | uninstall
 EOF
