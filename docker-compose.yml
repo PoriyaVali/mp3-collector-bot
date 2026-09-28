@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    image: mp3-collector-bot:latest
+    container_name: mp3-collector-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

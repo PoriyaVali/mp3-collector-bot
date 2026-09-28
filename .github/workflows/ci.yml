@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest
+      - run: pytest -q
+      - run: shellcheck install.sh mp3bot.sh
+
+  installer:
+    # Runs install.sh on a clean Ubuntu with Docker REMOVED, so the "install Docker
+    # if it is missing" path, the image build and the start-up check all really run.
+    # The credentials are fake, so the last step must notice the bot cannot log in
+    # to Telegram and fail with a clear message instead of reporting success.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove Docker
+        run: |
+          sudo systemctl stop docker docker.socket containerd >/dev/null 2>&1 || true
+          for p in docker-ce docker-ce-cli docker-ce-rootless-extras containerd.io docker-buildx-plugin \
+                   docker-compose-plugin moby-engine moby-cli moby-buildx moby-compose moby-containerd moby-runc; do
+            sudo apt-get purge -y -qq "$p" >/dev/null 2>&1 || true
+          done
+          sudo rm -f /usr/bin/docker /usr/local/bin/docker
+          hash -r
+          if command -v docker; then echo "docker is still installed"; exit 1; fi
+          echo "docker removed"
+
+      - name: Run the installer
+        run: |
+          set +e
+          sudo env API_ID=12345 API_HASH=0123456789abcdef0123456789abcdef \
+            BOT_TOKEN=123456:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ADMIN_IDS=1 \
+            WEB_PORT=8080 BASE_URL=http://127.0.0.1:8080 SKIP_LOGIN=1 \
+            INSTALL_DIR="$GITHUB_WORKSPACE" bash install.sh > install.log 2>&1
+          code=$?
+          cat install.log
+          set -e
+          grep -q "installed with the official script" install.log   # Docker was installed by us
+          grep -q "image built" install.log
+          docker compose version
+          test "$code" -eq 1                                          # fake credentials must not pass
+          grep -q "the bot is not healthy" install.log
+          if grep -q "^Installed\." install.log; then echo "reported success with fake credentials"; exit 1; fi
+          # the download server itself came up inside the container
+          sudo docker logs mp3-collector-bot 2>&1 | grep -q "download server listening"
